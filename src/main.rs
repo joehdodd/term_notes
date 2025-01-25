@@ -1,9 +1,15 @@
 use crossterm::event::{Event, KeyCode, KeyEvent};
-use ratatui::{DefaultTerminal, Frame};
+use ratatui::prelude::*;
+use ratatui::{
+    layout::Layout,
+    widgets::{Block, Borders, List, ListDirection, ListItem, ListState, Paragraph, Wrap},
+    DefaultTerminal, Frame,
+};
 use serde::{Deserialize, Serialize};
-//use std::fs::OpenOptions;
+use std::fs::OpenOptions;
+use std::io::prelude::*;
 use std::io::Result;
-//use tui_input::Input;
+use tui_input::Input;
 
 //  enum InputMode {
 //      Normal,
@@ -17,20 +23,32 @@ struct Note {
     date_created: String,
 }
 
-#[warn(dead_code)]
 pub struct App {
     exit: bool,
+    notes: Vec<Note>,
+    input: Input,
 }
 
-// TODO
-// 1. Update Todo struct to have detail key whose value is String
-// 2. Update app layout to be two panes vertically and horizontally
-//      1. Top pane has list of todos on the left, detail view for todo on the right
-//      2. Bottom pane has input for todos and details on left, help on right
-// 3. Update app logic to handle inputting for list and for details
 fn main() -> Result<()> {
     let mut terminal = ratatui::init();
-    let mut app = App { exit: false };
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open("notes.json")
+        .expect("Could not open or create file.");
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    let file_json: Vec<Note> = if contents.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&contents).expect("Could not process file.")
+    };
+    let mut app = App {
+        exit: false,
+        notes: file_json.to_vec(),
+        input: Input::default(),
+    };
     let app_result = app.run(&mut terminal);
     ratatui::restore();
     app_result
@@ -38,28 +56,58 @@ fn main() -> Result<()> {
 
 impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let mut list_state = ListState::default();
+        list_state.select_first();
+        //let first_note = self.notes.get(0);
+        //self.input.with_value(first_note.unwrap().body.to_owned());
         while !self.exit {
-            terminal.draw(|frame| self.draw(frame))?;
-            self.handle_events()?;
+            terminal.draw(|frame| self.draw(frame, &mut list_state))?;
+            self.handle_events(&mut list_state)?;
         }
         Ok(())
     }
 
-    fn draw(&self, frame: &mut Frame) {
-        frame.render_widget("Hello, World!", frame.area());
+    fn draw(&self, frame: &mut Frame, list_state: &mut ListState) {
+        // let layout_vertical = Layout::default()
+        //     .direction(Direction::Vertical)
+        //     .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+        //     .split(frame.area());
+        let layout_horizontal = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
+            .split(frame.area());
+        let items: Vec<String> = self
+            .notes
+            .iter()
+            .map(|item| item.title.to_owned())
+            .collect();
+        let list = List::new(items)
+            .block(Block::new().borders(Borders::ALL))
+            .highlight_style(Style::new().black().bg(Color::Green))
+            .direction(ListDirection::TopToBottom);
+        frame.render_stateful_widget(list, layout_horizontal[0], list_state);
+        let selected = self.notes.get(list_state.selected().unwrap_or(0)).unwrap();
+        frame.render_widget(
+            Paragraph::new(selected.body.to_owned())
+                .block(Block::new().borders(Borders::ALL))
+                .wrap(Wrap { trim: true }),
+            layout_horizontal[1],
+        );
     }
 
-    fn handle_events(&mut self) -> Result<()> {
+    fn handle_events(&mut self, list_state: &mut ListState) -> Result<()> {
         match crossterm::event::read()? {
-            Event::Key(key_event) => self.handle_key_events(key_event)?,
+            Event::Key(key_event) => self.handle_key_events(key_event, list_state)?,
             _ => {}
         }
         Ok(())
     }
 
-    fn handle_key_events(&mut self, event: KeyEvent) -> Result<()> {
+    fn handle_key_events(&mut self, event: KeyEvent, list_state: &mut ListState) -> Result<()> {
         match event.code {
             KeyCode::Char('q') => self.exit = true,
+            KeyCode::Char('j') => list_state.select_next(),
+            KeyCode::Char('k') => list_state.select_previous(),
             _ => {}
         }
         Ok(())
