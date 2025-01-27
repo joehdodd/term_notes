@@ -2,19 +2,25 @@ use crossterm::event::{Event, KeyCode, KeyEvent};
 use ratatui::prelude::*;
 use ratatui::{
     layout::Layout,
-    widgets::{Block, Borders, List, ListDirection, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListDirection, ListState, Paragraph, Wrap},
     DefaultTerminal, Frame,
 };
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::io::Result;
-use tui_input::Input;
+//use tui_input::Input;
 
-//  enum InputMode {
-//      Normal,
-//      Insert,
-//  }
+//enum InputMode {
+//   Normal,
+//  Insert,
+//}
+
+#[derive(Debug)]
+enum CurrentScreen {
+    Notes,
+    Edit,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Note {
@@ -23,10 +29,18 @@ struct Note {
     date_created: String,
 }
 
+#[derive(Debug)]
+struct Cursor {
+    x: u16,
+    y: u16,
+}
+
 pub struct App {
     exit: bool,
     notes: Vec<Note>,
-    input: Input,
+    //input: Input,
+    screen: CurrentScreen,
+    cursor: Cursor,
 }
 
 fn main() -> Result<()> {
@@ -47,7 +61,9 @@ fn main() -> Result<()> {
     let mut app = App {
         exit: false,
         notes: file_json.to_vec(),
-        input: Input::default(),
+        //input: Input::default(),
+        screen: CurrentScreen::Notes,
+        cursor: Cursor { x: 0, y: 0 },
     };
     let app_result = app.run(&mut terminal);
     ratatui::restore();
@@ -58,8 +74,6 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut list_state = ListState::default();
         list_state.select_first();
-        //let first_note = self.notes.get(0);
-        //self.input.with_value(first_note.unwrap().body.to_owned());
         while !self.exit {
             terminal.draw(|frame| self.draw(frame, &mut list_state))?;
             self.handle_events(&mut list_state)?;
@@ -67,11 +81,7 @@ impl App {
         Ok(())
     }
 
-    fn draw(&self, frame: &mut Frame, list_state: &mut ListState) {
-        // let layout_vertical = Layout::default()
-        //     .direction(Direction::Vertical)
-        //     .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
-        //     .split(frame.area());
+    fn draw(&mut self, frame: &mut Frame, list_state: &mut ListState) {
         let layout_horizontal = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
@@ -85,6 +95,15 @@ impl App {
             .block(Block::new().borders(Borders::ALL))
             .highlight_style(Style::new().black().bg(Color::Green))
             .direction(ListDirection::TopToBottom);
+        match self.screen {
+            CurrentScreen::Notes => {}
+            CurrentScreen::Edit => {
+                frame.set_cursor_position(Position {
+                    x: layout_horizontal[1].x + self.cursor.x + 1,
+                    y: layout_horizontal[1].y + self.cursor.y + 1,
+                });
+            }
+        }
         frame.render_stateful_widget(list, layout_horizontal[0], list_state);
         let selected = self.notes.get(list_state.selected().unwrap_or(0)).unwrap();
         frame.render_widget(
@@ -104,10 +123,56 @@ impl App {
     }
 
     fn handle_key_events(&mut self, event: KeyEvent, list_state: &mut ListState) -> Result<()> {
+        match self.screen {
+            CurrentScreen::Notes => self.handle_notes_key_events(event, list_state)?,
+            CurrentScreen::Edit => self.handle_edit_key_events(event)?,
+        }
+        Ok(())
+    }
+
+    fn handle_notes_key_events(
+        &mut self,
+        event: KeyEvent,
+        list_state: &mut ListState,
+    ) -> Result<()> {
         match event.code {
             KeyCode::Char('q') => self.exit = true,
             KeyCode::Char('j') => list_state.select_next(),
             KeyCode::Char('k') => list_state.select_previous(),
+            KeyCode::Tab => self.screen = CurrentScreen::Edit,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_edit_key_events(&mut self, event: KeyEvent) -> Result<()> {
+        match event.code {
+            KeyCode::Char('q') => self.exit = true,
+            KeyCode::Char('j') => {
+                self.cursor = Cursor {
+                    x: self.cursor.x,
+                    y: self.cursor.y + 1,
+                };
+            }
+            KeyCode::Char('k') => {
+                self.cursor = Cursor {
+                    x: self.cursor.x,
+                    y: self.cursor.y - if self.cursor.y > 0 { 1 } else { 0 },
+                };
+            }
+            KeyCode::Char('h') => {
+                self.cursor = Cursor {
+                    x: self.cursor.x - if self.cursor.x > 0 { 1 } else { 0 },
+                    y: self.cursor.y,
+                };
+            }
+            KeyCode::Char('l') => {
+                self.cursor = Cursor {
+                    x: self.cursor.x + 1,
+                    y: self.cursor.y,
+                };
+            }
+            KeyCode::Tab => self.screen = CurrentScreen::Notes,
             _ => {}
         }
         Ok(())
