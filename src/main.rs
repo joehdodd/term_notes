@@ -9,12 +9,13 @@ use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::io::Result;
-//use tui_input::Input;
+use tui_input::backend::crossterm::EventHandler;
+use tui_input::Input;
 
-//enum InputMode {
-//   Normal,
-//  Insert,
-//}
+enum InputMode {
+    Normal,
+    Insert,
+}
 
 #[derive(Debug)]
 enum CurrentScreen {
@@ -38,9 +39,11 @@ struct Cursor {
 pub struct App {
     exit: bool,
     notes: Vec<Note>,
-    //input: Input,
+    input: String,
+    input_mode: InputMode,
     screen: CurrentScreen,
     cursor: Cursor,
+    character_index: usize,
 }
 
 fn main() -> Result<()> {
@@ -61,9 +64,11 @@ fn main() -> Result<()> {
     let mut app = App {
         exit: false,
         notes: file_json.to_vec(),
-        //input: Input::default(),
+        input: String::new(),
+        input_mode: InputMode::Normal,
         screen: CurrentScreen::Notes,
         cursor: Cursor { x: 0, y: 0 },
+        character_index: 0,
     };
     let app_result = app.run(&mut terminal);
     ratatui::restore();
@@ -95,6 +100,15 @@ impl App {
             .block(Block::new().borders(Borders::ALL))
             .highlight_style(Style::new().black().bg(Color::Green))
             .direction(ListDirection::TopToBottom);
+        let selected = self.notes.get(list_state.selected().unwrap_or(0)).unwrap();
+        let paragraph = match self.input_mode {
+            InputMode::Normal => Paragraph::new(selected.body.to_owned())
+                .block(Block::new().borders(Borders::ALL))
+                .wrap(Wrap { trim: true }),
+            InputMode::Insert => Paragraph::new(self.input.to_owned())
+                .block(Block::new().borders(Borders::ALL))
+                .wrap(Wrap { trim: true }),
+        };
         match self.screen {
             CurrentScreen::Notes => {}
             CurrentScreen::Edit => {
@@ -105,13 +119,7 @@ impl App {
             }
         }
         frame.render_stateful_widget(list, layout_horizontal[0], list_state);
-        let selected = self.notes.get(list_state.selected().unwrap_or(0)).unwrap();
-        frame.render_widget(
-            Paragraph::new(selected.body.to_owned())
-                .block(Block::new().borders(Borders::ALL))
-                .wrap(Wrap { trim: true }),
-            layout_horizontal[1],
-        );
+        frame.render_widget(paragraph, layout_horizontal[1]);
     }
 
     fn handle_events(&mut self, list_state: &mut ListState) -> Result<()> {
@@ -125,7 +133,10 @@ impl App {
     fn handle_key_events(&mut self, event: KeyEvent, list_state: &mut ListState) -> Result<()> {
         match self.screen {
             CurrentScreen::Notes => self.handle_notes_key_events(event, list_state)?,
-            CurrentScreen::Edit => self.handle_edit_key_events(event)?,
+            CurrentScreen::Edit => match self.input_mode {
+                InputMode::Normal => self.handle_edit_key_events(event, list_state)?,
+                InputMode::Insert => self.handle_insert_key_events(event)?,
+            },
         }
         Ok(())
     }
@@ -145,7 +156,11 @@ impl App {
         Ok(())
     }
 
-    fn handle_edit_key_events(&mut self, event: KeyEvent) -> Result<()> {
+    fn handle_edit_key_events(
+        &mut self,
+        event: KeyEvent,
+        list_state: &mut ListState,
+    ) -> Result<()> {
         match event.code {
             KeyCode::Char('q') => self.exit = true,
             KeyCode::Char('j') => {
@@ -172,9 +187,32 @@ impl App {
                     y: self.cursor.y,
                 };
             }
+            KeyCode::Char('i') => {
+                let selected_note = self.notes.get(list_state.selected().unwrap_or(0)).unwrap();
+                self.input = selected_note.body.to_owned();
+                self.input_mode = InputMode::Insert;
+            }
             KeyCode::Tab => self.screen = CurrentScreen::Notes,
             _ => {}
         }
         Ok(())
+    }
+
+    fn handle_insert_key_events(&mut self, event: KeyEvent) -> Result<()> {
+        match event.code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn byte_index(&self) -> usize {
+        self.input
+            .char_indices()
+            .map(|(i, _)| i)
+            .nth(self.character_index)
+            .unwrap_or(self.input.len())
     }
 }
