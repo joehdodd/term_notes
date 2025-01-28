@@ -1,16 +1,20 @@
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::event::{Event, KeyCode, KeyEvent};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::prelude::*;
 use ratatui::{
     layout::Layout,
     widgets::{Block, Borders, List, ListDirection, ListState, Paragraph, Wrap},
-    DefaultTerminal, Frame,
+    Frame, Terminal,
 };
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
+use std::io;
 use std::io::prelude::*;
 use std::io::Result;
-use tui_input::backend::crossterm::EventHandler;
-use tui_input::Input;
+use tui_textarea::{CursorMove, TextArea};
 
 enum InputMode {
     Normal,
@@ -19,7 +23,7 @@ enum InputMode {
 
 #[derive(Debug)]
 enum CurrentScreen {
-    Notes,
+    List,
     Edit,
 }
 
@@ -30,24 +34,21 @@ struct Note {
     date_created: String,
 }
 
-#[derive(Debug)]
-struct Cursor {
-    x: u16,
-    y: u16,
-}
-
-pub struct App {
+pub struct App<'a> {
     exit: bool,
     notes: Vec<Note>,
-    input: String,
+    input: TextArea<'a>,
     input_mode: InputMode,
     screen: CurrentScreen,
-    cursor: Cursor,
-    character_index: usize,
 }
 
 fn main() -> Result<()> {
-    let mut terminal = ratatui::init();
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+    enable_raw_mode()?;
+    crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -64,19 +65,23 @@ fn main() -> Result<()> {
     let mut app = App {
         exit: false,
         notes: file_json.to_vec(),
-        input: String::new(),
+        input: TextArea::default(),
         input_mode: InputMode::Normal,
-        screen: CurrentScreen::Notes,
-        cursor: Cursor { x: 0, y: 0 },
-        character_index: 0,
+        screen: CurrentScreen::List,
     };
-    let app_result = app.run(&mut terminal);
-    ratatui::restore();
-    app_result
+    let _ = app.run(&mut terminal);
+    disable_raw_mode()?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+    Ok(())
 }
 
-impl App {
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+impl App<'_> {
+    pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         let mut list_state = ListState::default();
         list_state.select_first();
         while !self.exit {
@@ -100,26 +105,29 @@ impl App {
             .block(Block::new().borders(Borders::ALL))
             .highlight_style(Style::new().black().bg(Color::Green))
             .direction(ListDirection::TopToBottom);
-        let selected = self.notes.get(list_state.selected().unwrap_or(0)).unwrap();
-        let paragraph = match self.input_mode {
-            InputMode::Normal => Paragraph::new(selected.body.to_owned())
-                .block(Block::new().borders(Borders::ALL))
-                .wrap(Wrap { trim: true }),
-            InputMode::Insert => Paragraph::new(self.input.to_owned())
-                .block(Block::new().borders(Borders::ALL))
-                .wrap(Wrap { trim: true }),
-        };
         match self.screen {
-            CurrentScreen::Notes => {}
-            CurrentScreen::Edit => {
-                frame.set_cursor_position(Position {
-                    x: layout_horizontal[1].x + self.cursor.x + 1,
-                    y: layout_horizontal[1].y + self.cursor.y + 1,
-                });
+            CurrentScreen::List => {
+                frame.render_widget(
+                    Paragraph::new(
+                        self.notes
+                            .get(list_state.selected().unwrap_or(0))
+                            .unwrap()
+                            .body
+                            .as_str(),
+                    )
+                    .block(Block::default().borders(Borders::ALL))
+                    .wrap(Wrap { trim: true }),
+                    layout_horizontal[1],
+                );
             }
-        }
+            CurrentScreen::Edit => {
+                self.input
+                    .set_cursor_style(Style::default().fg(Color::Black).bg(Color::LightGreen));
+                self.input.set_block(Block::default().borders(Borders::ALL));
+                frame.render_widget(&self.input, layout_horizontal[1]);
+            }
+        };
         frame.render_stateful_widget(list, layout_horizontal[0], list_state);
-        frame.render_widget(paragraph, layout_horizontal[1]);
     }
 
     fn handle_events(&mut self, list_state: &mut ListState) -> Result<()> {
@@ -132,7 +140,7 @@ impl App {
 
     fn handle_key_events(&mut self, event: KeyEvent, list_state: &mut ListState) -> Result<()> {
         match self.screen {
-            CurrentScreen::Notes => self.handle_notes_key_events(event, list_state)?,
+            CurrentScreen::List => self.handle_list_key_events(event, list_state)?,
             CurrentScreen::Edit => match self.input_mode {
                 InputMode::Normal => self.handle_edit_key_events(event, list_state)?,
                 InputMode::Insert => self.handle_insert_key_events(event)?,
@@ -141,7 +149,7 @@ impl App {
         Ok(())
     }
 
-    fn handle_notes_key_events(
+    fn handle_list_key_events(
         &mut self,
         event: KeyEvent,
         list_state: &mut ListState,
@@ -150,7 +158,13 @@ impl App {
             KeyCode::Char('q') => self.exit = true,
             KeyCode::Char('j') => list_state.select_next(),
             KeyCode::Char('k') => list_state.select_previous(),
-            KeyCode::Tab => self.screen = CurrentScreen::Edit,
+            KeyCode::Tab => {
+                let selected_note = self.notes.get(list_state.selected().unwrap_or(0)).unwrap();
+                let body = selected_note.body.to_owned();
+                let vec = body.split("\n").map(|line| line.to_string()).collect();
+                self.input = TextArea::new(vec);
+                self.screen = CurrentScreen::Edit
+            }
             _ => {}
         }
         Ok(())
@@ -159,40 +173,16 @@ impl App {
     fn handle_edit_key_events(
         &mut self,
         event: KeyEvent,
-        list_state: &mut ListState,
+        _list_state: &mut ListState,
     ) -> Result<()> {
         match event.code {
             KeyCode::Char('q') => self.exit = true,
-            KeyCode::Char('j') => {
-                self.cursor = Cursor {
-                    x: self.cursor.x,
-                    y: self.cursor.y + 1,
-                };
-            }
-            KeyCode::Char('k') => {
-                self.cursor = Cursor {
-                    x: self.cursor.x,
-                    y: self.cursor.y - if self.cursor.y > 0 { 1 } else { 0 },
-                };
-            }
-            KeyCode::Char('h') => {
-                self.cursor = Cursor {
-                    x: self.cursor.x - if self.cursor.x > 0 { 1 } else { 0 },
-                    y: self.cursor.y,
-                };
-            }
-            KeyCode::Char('l') => {
-                self.cursor = Cursor {
-                    x: self.cursor.x + 1,
-                    y: self.cursor.y,
-                };
-            }
-            KeyCode::Char('i') => {
-                let selected_note = self.notes.get(list_state.selected().unwrap_or(0)).unwrap();
-                self.input = selected_note.body.to_owned();
-                self.input_mode = InputMode::Insert;
-            }
-            KeyCode::Tab => self.screen = CurrentScreen::Notes,
+            KeyCode::Char('j') => self.input.move_cursor(CursorMove::Down),
+            KeyCode::Char('k') => self.input.move_cursor(CursorMove::Up),
+            KeyCode::Char('h') => self.input.move_cursor(CursorMove::Back),
+            KeyCode::Char('l') => self.input.move_cursor(CursorMove::Forward),
+            KeyCode::Char('i') => self.input_mode = InputMode::Insert,
+            KeyCode::Tab => self.screen = CurrentScreen::List,
             _ => {}
         }
         Ok(())
@@ -203,16 +193,10 @@ impl App {
             KeyCode::Esc => {
                 self.input_mode = InputMode::Normal;
             }
-            _ => {}
+            _ => {
+                self.input.input(event);
+            }
         }
         Ok(())
-    }
-
-    fn byte_index(&self) -> usize {
-        self.input
-            .char_indices()
-            .map(|(i, _)| i)
-            .nth(self.character_index)
-            .unwrap_or(self.input.len())
     }
 }
