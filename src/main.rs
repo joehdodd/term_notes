@@ -28,15 +28,22 @@ enum CurrentScreen {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct Note {
+struct JsonNote {
     title: String,
     body: String,
     date_created: String,
 }
 
+#[derive(Clone)]
+struct Note<'a> {
+    title: String,
+    body: TextArea<'a>,
+    date_created: String,
+}
+
 pub struct App<'a> {
     exit: bool,
-    notes: Vec<Note>,
+    notes: Vec<Note<'a>>,
     input: TextArea<'a>,
     input_mode: InputMode,
     screen: CurrentScreen,
@@ -57,14 +64,22 @@ fn main() -> Result<()> {
         .expect("Could not open or create file.");
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
-    let file_json: Vec<Note> = if contents.is_empty() {
+    let file_json: Vec<JsonNote> = if contents.is_empty() {
         Vec::new()
     } else {
         serde_json::from_str(&contents).expect("Could not process file.")
     };
+    let app_notes = file_json
+        .iter()
+        .map(|note| Note {
+            title: note.title.to_owned(),
+            body: TextArea::new(note.body.split("\n").map(|line| line.to_string()).collect()),
+            date_created: note.date_created.to_owned(),
+        })
+        .collect();
     let mut app = App {
         exit: false,
-        notes: file_json.to_vec(),
+        notes: app_notes,
         input: TextArea::default(),
         input_mode: InputMode::Normal,
         screen: CurrentScreen::List,
@@ -105,28 +120,12 @@ impl App<'_> {
             .block(Block::new().borders(Borders::ALL))
             .highlight_style(Style::new().black().bg(Color::Green))
             .direction(ListDirection::TopToBottom);
-        match self.screen {
-            CurrentScreen::List => {
-                frame.render_widget(
-                    Paragraph::new(
-                        self.notes
-                            .get(list_state.selected().unwrap_or(0))
-                            .unwrap()
-                            .body
-                            .as_str(),
-                    )
-                    .block(Block::default().borders(Borders::ALL))
-                    .wrap(Wrap { trim: true }),
-                    layout_horizontal[1],
-                );
-            }
-            CurrentScreen::Edit => {
-                self.input
-                    .set_cursor_style(Style::default().fg(Color::Black).bg(Color::LightGreen));
-                self.input.set_block(Block::default().borders(Borders::ALL));
-                frame.render_widget(&self.input, layout_horizontal[1]);
-            }
-        };
+        let selected = self.notes.get(list_state.selected().unwrap_or(0)).unwrap();
+        // How can we note clone the body here?
+        let mut body = selected.body.clone();
+        body.set_cursor_style(Style::default().fg(Color::Black).bg(Color::LightGreen));
+        body.set_block(Block::default().borders(Borders::ALL));
+        frame.render_widget(&body, layout_horizontal[1]);
         frame.render_stateful_widget(list, layout_horizontal[0], list_state);
     }
 
@@ -158,13 +157,7 @@ impl App<'_> {
             KeyCode::Char('q') => self.exit = true,
             KeyCode::Char('j') => list_state.select_next(),
             KeyCode::Char('k') => list_state.select_previous(),
-            KeyCode::Tab => {
-                let selected_note = self.notes.get(list_state.selected().unwrap_or(0)).unwrap();
-                let body = selected_note.body.to_owned();
-                let vec = body.split("\n").map(|line| line.to_string()).collect();
-                self.input = TextArea::new(vec);
-                self.screen = CurrentScreen::Edit
-            }
+            KeyCode::Tab => self.screen = CurrentScreen::Edit,
             _ => {}
         }
         Ok(())
@@ -194,6 +187,7 @@ impl App<'_> {
                 self.input_mode = InputMode::Normal;
             }
             _ => {
+                // Call in input on body of currently selected note
                 self.input.input(event);
             }
         }
