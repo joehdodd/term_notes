@@ -6,7 +6,7 @@ use crossterm::terminal::{
 use ratatui::prelude::*;
 use ratatui::{
     layout::Layout,
-    widgets::{Block, Borders, List, ListDirection, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListDirection, ListState, Padding},
     Frame, Terminal,
 };
 use serde::{Deserialize, Serialize};
@@ -44,7 +44,7 @@ struct Note<'a> {
 pub struct App<'a> {
     exit: bool,
     notes: Vec<Note<'a>>,
-    input: TextArea<'a>,
+    current_note: usize,
     input_mode: InputMode,
     screen: CurrentScreen,
 }
@@ -69,7 +69,7 @@ fn main() -> Result<()> {
     } else {
         serde_json::from_str(&contents).expect("Could not process file.")
     };
-    let app_notes = file_json
+    let app_notes: Vec<Note> = file_json
         .iter()
         .map(|note| Note {
             title: note.title.to_owned(),
@@ -80,7 +80,7 @@ fn main() -> Result<()> {
     let mut app = App {
         exit: false,
         notes: app_notes,
-        input: TextArea::default(),
+        current_note: 0,
         input_mode: InputMode::Normal,
         screen: CurrentScreen::List,
     };
@@ -107,6 +107,7 @@ impl App<'_> {
     }
 
     fn draw(&mut self, frame: &mut Frame, list_state: &mut ListState) {
+        self.current_note = list_state.selected().unwrap_or(0);
         let layout_horizontal = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
@@ -117,7 +118,7 @@ impl App<'_> {
             .map(|item| item.title.to_owned())
             .collect();
         let list = List::new(items)
-            .block(Block::new().borders(Borders::ALL))
+            .block(Block::new().borders(Borders::ALL).padding(Padding::left(1)))
             .highlight_style(Style::new().black().bg(Color::Green))
             .direction(ListDirection::TopToBottom);
         let selected = self.notes.get(list_state.selected().unwrap_or(0)).unwrap();
@@ -155,7 +156,17 @@ impl App<'_> {
     ) -> Result<()> {
         match event.code {
             KeyCode::Char('q') => self.exit = true,
-            KeyCode::Char('j') => list_state.select_next(),
+            KeyCode::Char('j') => {
+                let selected = match list_state.selected() {
+                    Some(selected) => selected,
+                    None => 0,
+                };
+                if selected == self.notes.len() - 1 {
+                    list_state.select_first();
+                } else {
+                    list_state.select_next();
+                }
+            }
             KeyCode::Char('k') => list_state.select_previous(),
             KeyCode::Tab => self.screen = CurrentScreen::Edit,
             _ => {}
@@ -168,12 +179,13 @@ impl App<'_> {
         event: KeyEvent,
         _list_state: &mut ListState,
     ) -> Result<()> {
+        let selected_note = self.notes.get_mut(self.current_note).unwrap();
         match event.code {
             KeyCode::Char('q') => self.exit = true,
-            KeyCode::Char('j') => self.input.move_cursor(CursorMove::Down),
-            KeyCode::Char('k') => self.input.move_cursor(CursorMove::Up),
-            KeyCode::Char('h') => self.input.move_cursor(CursorMove::Back),
-            KeyCode::Char('l') => self.input.move_cursor(CursorMove::Forward),
+            KeyCode::Char('j') => selected_note.body.move_cursor(CursorMove::Down),
+            KeyCode::Char('k') => selected_note.body.move_cursor(CursorMove::Up),
+            KeyCode::Char('h') => selected_note.body.move_cursor(CursorMove::Back),
+            KeyCode::Char('l') => selected_note.body.move_cursor(CursorMove::Forward),
             KeyCode::Char('i') => self.input_mode = InputMode::Insert,
             KeyCode::Tab => self.screen = CurrentScreen::List,
             _ => {}
@@ -182,13 +194,14 @@ impl App<'_> {
     }
 
     fn handle_insert_key_events(&mut self, event: KeyEvent) -> Result<()> {
+        let selected_note = self.notes.get_mut(self.current_note).unwrap();
         match event.code {
             KeyCode::Esc => {
                 self.input_mode = InputMode::Normal;
             }
             _ => {
                 // Call in input on body of currently selected note
-                self.input.input(event);
+                selected_note.body.input(event);
             }
         }
         Ok(())
