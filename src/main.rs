@@ -71,15 +71,20 @@ fn main() -> Result<()> {
     };
     let app_notes: Vec<Note> = file_json
         .iter()
-        .map(|note| Note {
-            title: note.title.to_owned(),
-            body: TextArea::new(note.body.split("\n").map(|line| line.to_string()).collect()),
-            date_created: note.date_created.to_owned(),
+        .map(|note| {
+            let mut text_area =
+                TextArea::new(note.body.split("\n").map(|line| line.to_string()).collect());
+            text_area.set_block(Block::default().borders(Borders::ALL));
+            Note {
+                title: note.title.to_owned(),
+                body: text_area,
+                date_created: note.date_created.to_owned(),
+            }
         })
         .collect();
     let mut app = App {
         exit: false,
-        notes: app_notes,
+        notes: app_notes.to_vec(),
         current_note: 0,
         input_mode: InputMode::Normal,
         screen: CurrentScreen::List,
@@ -96,6 +101,13 @@ fn main() -> Result<()> {
 }
 
 impl App<'_> {
+    //TODO: Implement new function
+    // Takes notes and returns instance of App
+    // App::new(notes: Vec<Note>) -> Self
+    // Called like...
+    // let app = App::new(notes);
+    // app.run(&mut terminal);
+
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         let mut list_state = ListState::default();
         list_state.select_first();
@@ -122,11 +134,7 @@ impl App<'_> {
             .highlight_style(Style::new().black().bg(Color::Green))
             .direction(ListDirection::TopToBottom);
         let selected = self.notes.get(list_state.selected().unwrap_or(0)).unwrap();
-        // How can we note clone the body here?
-        let mut body = selected.body.clone();
-        body.set_cursor_style(Style::default().fg(Color::Black).bg(Color::LightGreen));
-        body.set_block(Block::default().borders(Borders::ALL));
-        frame.render_widget(&body, layout_horizontal[1]);
+        frame.render_widget(&selected.body, layout_horizontal[1]);
         frame.render_stateful_widget(list, layout_horizontal[0], list_state);
     }
 
