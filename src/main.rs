@@ -10,6 +10,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::from_str;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::prelude::*;
@@ -38,7 +39,6 @@ struct JsonNote {
 struct Note<'a> {
     title: String,
     body: TextArea<'a>,
-    date_created: String,
 }
 
 pub struct App<'a> {
@@ -56,40 +56,31 @@ fn main() -> Result<()> {
     crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+
+    // retrieve file
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
-        .open("notes.json")
-        .expect("Could not open or create file.");
+        .open("notes.json")?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
+
+    // parse json file to Vec<JsonNote>
     let file_json: Vec<JsonNote> = if contents.is_empty() {
         Vec::new()
     } else {
-        serde_json::from_str(&contents).expect("Could not process file.")
+        from_str(&contents)?
     };
-    let app_notes: Vec<Note> = file_json
-        .iter()
-        .map(|note| {
-            let mut text_area =
-                TextArea::new(note.body.split("\n").map(|line| line.to_string()).collect());
-            text_area.set_block(Block::default().borders(Borders::ALL));
-            Note {
-                title: note.title.to_owned(),
-                body: text_area,
-                date_created: note.date_created.to_owned(),
-            }
-        })
-        .collect();
-    let mut app = App {
-        exit: false,
-        notes: app_notes.to_vec(),
-        current_note: 0,
-        input_mode: InputMode::Normal,
-        screen: CurrentScreen::List,
-    };
-    let _ = app.run(&mut terminal);
+
+    // instantiate app
+    let mut app = App::new(file_json);
+    // if let Err(e) captures the error and prints it
+    // if app.run fails
+    if let Err(e) = app.run(&mut terminal) {
+        eprintln!("Error: {}", e);
+    }
+
     disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
@@ -97,16 +88,32 @@ fn main() -> Result<()> {
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
+
     Ok(())
 }
 
 impl App<'_> {
-    //TODO: Implement new function
-    // Takes notes and returns instance of App
-    // App::new(notes: Vec<Note>) -> Self
-    // Called like...
-    // let app = App::new(notes);
-    // app.run(&mut terminal);
+    fn new(file_json: Vec<JsonNote>) -> App<'static> {
+        let app_notes: Vec<Note> = file_json
+            .iter()
+            .map(|note| {
+                let mut text_area =
+                    TextArea::new(note.body.split("\n").map(|line| line.to_string()).collect());
+                text_area.set_block(Block::default().borders(Borders::ALL));
+                Note {
+                    title: note.title.to_owned(),
+                    body: text_area,
+                }
+            })
+            .collect();
+        App {
+            exit: false,
+            notes: app_notes,
+            current_note: 0,
+            input_mode: InputMode::Normal,
+            screen: CurrentScreen::List,
+        }
+    }
 
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         let mut list_state = ListState::default();
@@ -120,6 +127,7 @@ impl App<'_> {
 
     fn draw(&mut self, frame: &mut Frame, list_state: &mut ListState) {
         self.current_note = list_state.selected().unwrap_or(0);
+
         let layout_horizontal = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
@@ -129,11 +137,37 @@ impl App<'_> {
             .iter()
             .map(|item| item.title.to_owned())
             .collect();
+
+        let (list_style, cursor_style, cursor_line_style) = match self.screen {
+            CurrentScreen::List => (
+                Style::new().black().bg(Color::Green),
+                Style::default(),
+                Style::default(),
+            ),
+            CurrentScreen::Edit => match self.input_mode {
+                InputMode::Normal => (
+                    Style::default().bg(Color::White).fg(Color::Black),
+                    Style::default().bg(Color::White).fg(Color::Black),
+                    Style::default(),
+                ),
+                InputMode::Insert => (
+                    Style::default().bg(Color::White).fg(Color::Black),
+                    Style::default().bg(Color::Green).fg(Color::Black),
+                    Style::default(),
+                ),
+            },
+        };
+
         let list = List::new(items)
-            .block(Block::new().borders(Borders::ALL).padding(Padding::left(1)))
-            .highlight_style(Style::new().black().bg(Color::Green))
+            .block(Block::new().borders(Borders::ALL))
+            .highlight_style(list_style)
             .direction(ListDirection::TopToBottom);
-        let selected = self.notes.get(list_state.selected().unwrap_or(0)).unwrap();
+        let selected: &mut Note<'_> = self
+            .notes
+            .get_mut(list_state.selected().unwrap_or(0))
+            .unwrap();
+        selected.body.set_cursor_style(cursor_style);
+        selected.body.set_cursor_line_style(cursor_line_style);
         frame.render_widget(&selected.body, layout_horizontal[1]);
         frame.render_stateful_widget(list, layout_horizontal[0], list_state);
     }
