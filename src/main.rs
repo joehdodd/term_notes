@@ -6,7 +6,7 @@ use crossterm::terminal::{
 use ratatui::prelude::*;
 use ratatui::{
     layout::Layout,
-    widgets::{Block, Borders, List, ListDirection, ListState, Padding},
+    widgets::{Block, Borders, Clear, List, ListDirection, ListState, Padding, Paragraph, Wrap},
     Frame, Terminal,
 };
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,7 @@ enum InputMode {
 enum CurrentScreen {
     List,
     Edit,
+    Help,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -99,7 +100,12 @@ impl App<'_> {
             .map(|note| {
                 let mut text_area =
                     TextArea::new(note.body.split("\n").map(|line| line.to_string()).collect());
-                text_area.set_block(Block::default().borders(Borders::ALL));
+                text_area.set_block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title_bottom(" ?: help ")
+                        .title_alignment(Alignment::Center),
+                );
                 Note {
                     title: note.title.to_owned(),
                     body: text_area,
@@ -156,6 +162,7 @@ impl App<'_> {
                     Style::default(),
                 ),
             },
+            _ => (Style::default(), Style::default(), Style::default()),
         };
 
         let list = List::new(items)
@@ -170,6 +177,51 @@ impl App<'_> {
         selected.body.set_cursor_line_style(cursor_line_style);
         frame.render_widget(&selected.body, layout_horizontal[1]);
         frame.render_stateful_widget(list, layout_horizontal[0], list_state);
+
+        if let CurrentScreen::Help = self.screen {
+            self.render_popup(frame).unwrap();
+        }
+    }
+
+    fn render_popup(&mut self, frame: &mut Frame) -> Result<()> {
+        let popup_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![
+                Constraint::Percentage(25),
+                Constraint::Percentage(50),
+                Constraint::Percentage(25),
+            ])
+            .split(frame.area());
+        let vertical_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![
+                Constraint::Percentage(25),
+                Constraint::Percentage(50),
+                Constraint::Percentage(25),
+            ])
+            .split(popup_layout[1]);
+        let help_paragrpah = Paragraph::new(vec![
+            "j: move cursor down".into(),
+            "k: move cursor up".into(),
+            "h: move cursor left".into(),
+            "l: move cursor right".into(),
+            "i: insert mode".into(),
+            "esc: normal mode".into(),
+            "?: help".into(),
+            "q: quit".into(),
+            "tab: switch screens".into(),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Term_Notes Help ")
+                .title_alignment(Alignment::Center)
+                .padding(Padding::uniform(1)),
+        )
+        .wrap(Wrap { trim: true });
+        frame.render_widget(Clear, vertical_layout[1]);
+        frame.render_widget(help_paragrpah, vertical_layout[1]);
+        Ok(())
     }
 
     fn handle_events(&mut self, list_state: &mut ListState) -> Result<()> {
@@ -187,6 +239,11 @@ impl App<'_> {
                 InputMode::Normal => self.handle_edit_key_events(event, list_state)?,
                 InputMode::Insert => self.handle_insert_key_events(event)?,
             },
+            CurrentScreen::Help => {
+                if event.code == KeyCode::Char('?') {
+                    self.screen = CurrentScreen::Edit;
+                }
+            }
         }
         Ok(())
     }
@@ -210,6 +267,7 @@ impl App<'_> {
                 }
             }
             KeyCode::Char('k') => list_state.select_previous(),
+            KeyCode::Char('?') => self.screen = CurrentScreen::Help,
             KeyCode::Tab => self.screen = CurrentScreen::Edit,
             _ => {}
         }
@@ -229,6 +287,7 @@ impl App<'_> {
             KeyCode::Char('h') => selected_note.body.move_cursor(CursorMove::Back),
             KeyCode::Char('l') => selected_note.body.move_cursor(CursorMove::Forward),
             KeyCode::Char('i') => self.input_mode = InputMode::Insert,
+            KeyCode::Char('?') => self.screen = CurrentScreen::Help,
             KeyCode::Tab => self.screen = CurrentScreen::List,
             _ => {}
         }
