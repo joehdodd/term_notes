@@ -103,7 +103,7 @@ impl App<'_> {
                 text_area.set_block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title_bottom(" ?: help ")
+                        .title_bottom(" ?: toggle help ")
                         .title_alignment(Alignment::Center),
                 );
                 Note {
@@ -207,7 +207,7 @@ impl App<'_> {
             "l: move cursor right".into(),
             "i: insert mode".into(),
             "esc: normal mode".into(),
-            "?: help".into(),
+            "?: toggle help".into(),
             "q: quit".into(),
             "tab: switch screens".into(),
         ])
