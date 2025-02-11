@@ -10,7 +10,7 @@ use std::io;
 use std::io::prelude::*;
 use std::io::Result;
 
-use crate::notes_app::notes_app::{App, JsonNote};
+use crate::notes_app::app::{App, JsonNote};
 pub mod notes_app;
 
 fn main() -> Result<()> {

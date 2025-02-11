@@ -1,4 +1,4 @@
-pub mod notes_app {
+pub mod app {
     use crossterm::event::{Event, KeyCode, KeyEvent};
     use ratatui::prelude::*;
     use ratatui::{
@@ -9,8 +9,13 @@ pub mod notes_app {
         Frame, Terminal,
     };
     use serde::{Deserialize, Serialize};
+    use std::fs;
     use std::io::Result;
+    use std::rc::Rc;
+    use tui_input::backend::crossterm::EventHandler;
+    use tui_input::Input;
     use tui_textarea::{CursorMove, TextArea};
+
     enum InputMode {
         Normal,
         Insert,
@@ -21,6 +26,7 @@ pub mod notes_app {
         List,
         Edit,
         Help,
+        New,
     }
 
     #[derive(Clone, Serialize, Deserialize)]
@@ -40,6 +46,7 @@ pub mod notes_app {
         exit: bool,
         notes: Vec<Note<'a>>,
         current_note: usize,
+        input: Input,
         input_mode: InputMode,
         screen: CurrentScreen,
     }
@@ -67,6 +74,7 @@ pub mod notes_app {
                 exit: false,
                 notes: app_notes,
                 current_note: 0,
+                input: Input::default(),
                 input_mode: InputMode::Normal,
                 screen: CurrentScreen::List,
             }
@@ -130,36 +138,26 @@ pub mod notes_app {
                     frame.render_widget(title, layout_horizontal[1]);
                 }
                 None => {
-                    let title = Paragraph::new("No notes")
-                        .block(Block::default().borders(Borders::ALL).title(" Term_Notes "))
-                        .alignment(Alignment::Center);
+                    let title =
+                        Paragraph::new("No notes (press \"a\" to add a note or \"q\" to quit)")
+                            .block(Block::default().borders(Borders::ALL).title(" Term_Notes "))
+                            .alignment(Alignment::Center);
                     frame.render_widget(title, layout_horizontal[1]);
                 }
             }
             frame.render_stateful_widget(list, layout_horizontal[0], list_state);
 
             if let CurrentScreen::Help = self.screen {
+                self.render_help_popup(frame).unwrap();
+            }
+
+            if let CurrentScreen::New = self.screen {
                 self.render_popup(frame).unwrap();
             }
         }
 
-        fn render_popup(&mut self, frame: &mut Frame) -> Result<()> {
-            let popup_layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints(vec![
-                    Constraint::Percentage(25),
-                    Constraint::Percentage(50),
-                    Constraint::Percentage(25),
-                ])
-                .split(frame.area());
-            let vertical_layout = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints(vec![
-                    Constraint::Percentage(25),
-                    Constraint::Percentage(50),
-                    Constraint::Percentage(25),
-                ])
-                .split(popup_layout[1]);
+        fn render_help_popup(&mut self, frame: &mut Frame) -> Result<()> {
+            let vertical_layout = self.get_popup_layout(frame);
             let help_paragrpah = Paragraph::new(vec![
                 "j: move cursor down".into(),
                 "k: move cursor up".into(),
@@ -184,6 +182,42 @@ pub mod notes_app {
             Ok(())
         }
 
+        fn render_popup(&mut self, frame: &mut Frame) -> Result<()> {
+            let vertical_layout = self.get_popup_layout(frame);
+            let input = Paragraph::new(self.input.value())
+                .block(Block::default().borders(Borders::ALL).title("Input"));
+            let width = vertical_layout[1].width.max(3) - 3; // keep 2 for borders and 1 for cursor
+            let scroll = self.input.visual_scroll(width as usize);
+            frame.set_cursor_position((
+                vertical_layout[1].x + ((self.input.visual_cursor()).max(scroll) - scroll) as u16,
+                vertical_layout[1].y + 1,
+            ));
+            frame.render_widget(Clear, vertical_layout[1]);
+            frame.render_widget(input, vertical_layout[1]);
+            Ok(())
+        }
+
+        fn get_popup_layout(&mut self, frame: &mut Frame) -> Rc<[Rect]> {
+            let popup_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(vec![
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(25),
+                ])
+                .split(frame.area());
+            let vertical_layout = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(vec![
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(25),
+                ])
+                .split(popup_layout[1]);
+
+            vertical_layout
+        }
+
         fn handle_events(&mut self, list_state: &mut ListState) -> Result<()> {
             match crossterm::event::read()? {
                 Event::Key(key_event) => self.handle_key_events(key_event, list_state)?,
@@ -201,10 +235,55 @@ pub mod notes_app {
                 },
                 CurrentScreen::Help => {
                     if event.code == KeyCode::Char('?') {
-                        self.screen = CurrentScreen::Edit;
+                        self.screen = CurrentScreen::List;
                     }
                 }
+                CurrentScreen::New => match self.input_mode {
+                    InputMode::Normal => self.handle_new_normal_key_events(event)?,
+                    InputMode::Insert => self.handle_new_insert_key_events(event, list_state)?,
+                },
             }
+            Ok(())
+        }
+
+        fn handle_new_normal_key_events(&mut self, event: KeyEvent) -> Result<()> {
+            match event.code {
+                KeyCode::Esc => self.screen = CurrentScreen::List,
+                KeyCode::Char('q') => self.exit = true,
+                KeyCode::Char('i') => self.input_mode = InputMode::Insert,
+                _ => {}
+            }
+            Ok(())
+        }
+
+        fn handle_new_insert_key_events(
+            &mut self,
+            event: KeyEvent,
+            _list_state: &mut ListState,
+        ) -> Result<()> {
+            match event.code {
+                KeyCode::Esc => self.input_mode = InputMode::Normal,
+                KeyCode::Backspace => {
+                    self.input.handle_event(&Event::Key(event));
+                    return Ok(());
+                }
+                KeyCode::Enter => {
+                    if self.input.value().len() >= 3 {
+                        self.notes.push(Note {
+                            title: self.input.value().to_owned(),
+                            body: TextArea::default(),
+                        });
+                        let notes_string = self.notes.to_owned();
+                        return Ok(());
+                    }
+                }
+                _ => {
+                    if self.input.value().len() <= 80 {
+                        self.input.handle_event(&Event::Key(event));
+                        return Ok(());
+                    }
+                }
+            };
             Ok(())
         }
 
@@ -214,8 +293,12 @@ pub mod notes_app {
             list_state: &mut ListState,
         ) -> Result<()> {
             match event.code {
+                KeyCode::Char('a') => self.screen = CurrentScreen::New,
                 KeyCode::Char('q') => self.exit = true,
                 KeyCode::Char('j') => {
+                    if self.notes.is_empty() {
+                        return Ok(());
+                    }
                     let selected = match list_state.selected() {
                         Some(selected) => selected,
                         None => 0,
@@ -228,7 +311,12 @@ pub mod notes_app {
                 }
                 KeyCode::Char('k') => list_state.select_previous(),
                 KeyCode::Char('?') => self.screen = CurrentScreen::Help,
-                KeyCode::Tab => self.screen = CurrentScreen::Edit,
+                KeyCode::Tab => {
+                    if self.notes.is_empty() {
+                        return Ok(());
+                    }
+                    self.screen = CurrentScreen::Edit
+                }
                 _ => {}
             }
             Ok(())
